@@ -186,10 +186,23 @@ show_progress $CURRENT_STEP $TOTAL_STEPS "Настройка автопродл�
 
 # Проверка метода автопродления (systemd timer или cron)
 if systemctl list-timers 2>/dev/null | grep -q certbot.timer; then
-    # Systemd timer уже настроен
+    # Systemd timer найден - добавляем Persistent=true
     systemctl enable certbot.timer 2>/dev/null || true
     systemctl start certbot.timer 2>/dev/null || true
-    show_complete "Автопродление настроено (systemd timer)"
+    
+    # Проверяем наличие Persistent=true в конфигурации
+    if ! systemctl cat certbot.timer 2>/dev/null | grep -q "Persistent=true"; then
+        # Создаем override для добавления Persistent=true
+        mkdir -p /etc/systemd/system/certbot.timer.d/
+        cat > /etc/systemd/system/certbot.timer.d/override.conf <<'EOF'
+[Timer]
+Persistent=true
+EOF
+        systemctl daemon-reload
+        systemctl restart certbot.timer
+    fi
+    
+    show_complete "Автопродление настроено (systemd timer + Persistent)"
 elif [ -f /etc/cron.d/certbot ]; then
     # Cron уже настроен
     show_complete "Автопродление настроено (cron)"
@@ -210,6 +223,7 @@ if execute_silent "certbot renew --dry-run"; then
 else
     show_error "Предупреждение: тест автопродления не прошел (не критично)"
 fi
+
 
 
 # Шаг 12: Настройка Nginx
