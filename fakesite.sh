@@ -180,6 +180,38 @@ else
     exit 1
 fi
 
+# Шаг 11.5: Настройка автопродления сертификата
+CURRENT_STEP=$((CURRENT_STEP + 1))
+show_progress $CURRENT_STEP $TOTAL_STEPS "Настройка автопродления сертификата..."
+
+# Проверка метода автопродления (systemd timer или cron)
+if systemctl list-timers 2>/dev/null | grep -q certbot.timer; then
+    # Systemd timer уже настроен
+    systemctl enable certbot.timer 2>/dev/null || true
+    systemctl start certbot.timer 2>/dev/null || true
+    show_complete "Автопродление настроено (systemd timer)"
+elif [ -f /etc/cron.d/certbot ]; then
+    # Cron уже настроен
+    show_complete "Автопродление настроено (cron)"
+else
+    # Создаем cron задачу вручную
+    cat > /etc/cron.d/certbot <<'CRONEOF'
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+0 */12 * * * root certbot -q renew --nginx
+CRONEOF
+    show_complete "Автопродление настроено (новый cron)"
+fi
+
+# Тест автопродления
+if execute_silent "certbot renew --dry-run"; then
+    show_complete "Тест автопродления успешен"
+else
+    show_error "Предупреждение: тест автопродления не прошел (не критично)"
+fi
+
+
 # Шаг 12: Настройка Nginx
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Создание конфигурации Nginx..."
