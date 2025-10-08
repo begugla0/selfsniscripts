@@ -51,7 +51,7 @@ echo -e "${CYAN}=====================================================${NC}"
 echo ""
 
 # Общее количество шагов
-TOTAL_STEPS=14
+TOTAL_STEPS=13
 CURRENT_STEP=0
 
 # Шаг 1: Проверка системы
@@ -180,10 +180,6 @@ else
     exit 1
 fi
 
-# Шаг 12: Настройка автопродления сертификата
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Настройка автопродления сертификата..."
-
 # Проверка метода автопродления (systemd timer или cron)
 if systemctl list-timers 2>/dev/null | grep -q certbot.timer; then
     # Systemd timer найден - добавляем Persistent=true
@@ -217,16 +213,13 @@ CRONEOF
     show_complete "Автопродление настроено (новый cron)"
 fi
 
-# Тест автопродления
-if execute_silent "certbot renew --dry-run"; then
-    show_complete "Тест автопродления успешен"
-else
-    show_error "Предупреждение: тест автопродления не прошел (не критично)"
-fi
+# Тихий тест автопродления
+execute_silent "certbot renew --dry-run" || true
 
 
 
-# Шаг 13: Настройка Nginx
+
+# Шаг 12: Настройка Nginx
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Создание конфигурации Nginx..."
 
@@ -274,7 +267,7 @@ EOF
 rm -f /etc/nginx/sites-enabled/default
 show_complete "Конфигурация Nginx создана"
 
-# Шаг 14: Запуск Nginx
+# Шаг 13: Запуск Nginx
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Запуск Nginx..."
 
