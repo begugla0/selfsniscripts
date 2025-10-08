@@ -71,7 +71,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/begugla0/selfsniscripts/main/f
 
 Скачать скрипт
 ```
-wget https://raw.githubusercontent.com/begugla0/selfsniscripts/blob/main/fakesite.sh
+wget https://raw.githubusercontent.com/begugla0/selfsniscripts/main/fakesite.sh
 ```
 
 Дать права на выполнение
