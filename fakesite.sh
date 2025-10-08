@@ -51,7 +51,7 @@ echo -e "${CYAN}=====================================================${NC}"
 echo ""
 
 # Общее количество шагов
-TOTAL_STEPS=13
+TOTAL_STEPS=15
 CURRENT_STEP=0
 
 # Шаг 1: Проверка системы
@@ -180,7 +180,7 @@ else
     exit 1
 fi
 
-# Шаг 11.5: Настройка автопродления сертификата
+# Шаг 12: Настройка автопродления сертификата
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Настройка автопродления сертификата..."
 
@@ -226,7 +226,7 @@ fi
 
 
 
-# Шаг 12: Настройка Nginx
+# Шаг 13: Настройка Nginx
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Создание конфигурации Nginx..."
 
@@ -274,7 +274,7 @@ EOF
 rm -f /etc/nginx/sites-enabled/default
 show_complete "Конфигурация Nginx создана"
 
-# Шаг 13: Запуск Nginx
+# Шаг 14: Запуск Nginx
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Запуск Nginx..."
 
