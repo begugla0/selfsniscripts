@@ -63,7 +63,7 @@
 Подключитесь к серверу по SSH и выполните команду:
 
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/begugla0/selfsniscripts/blob/main/fakesite.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/begugla0/selfsniscripts/main/fakesite.sh)
 ```
 
 
