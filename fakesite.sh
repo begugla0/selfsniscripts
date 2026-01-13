@@ -50,8 +50,8 @@ echo -e "${CYAN}  Установка и настройка Self SNI Scripts by b
 echo -e "${CYAN}=====================================================${NC}"
 echo ""
 
-# Общее количество шагов
-TOTAL_STEPS=13
+# Общее количество шагов (увеличено с 13 до 14)
+TOTAL_STEPS=14
 CURRENT_STEP=0
 
 # Шаг 1: Проверка системы
@@ -91,15 +91,34 @@ fi
 
 # Шаг 4: Установка зависимостей
 CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Установка компонентов (nginx, certbot, git)..."
-if execute_silent "DEBIAN_FRONTEND=noninteractive apt install -y nginx certbot python3-certbot-nginx git curl dnsutils"; then
+show_progress $CURRENT_STEP $TOTAL_STEPS "Установка компонентов (nginx, certbot, git, pip)..."
+if execute_silent "DEBIAN_FRONTEND=noninteractive apt install -y nginx certbot python3-certbot-nginx git curl dnsutils python3-pip"; then
     show_complete "Компоненты успешно установлены"
 else
     show_error "Не удалось установить необходимые компоненты"
     exit 1
 fi
 
-# Шаг 5: Получение внешнего IP
+# НОВЫЙ ШАГ 5: Обновление Python библиотек для certbot
+CURRENT_STEP=$((CURRENT_STEP + 1))
+show_progress $CURRENT_STEP $TOTAL_STEPS "Обновление зависимостей certbot (pyOpenSSL, cryptography)..."
+
+# Обновляем pip сначала
+execute_silent "pip3 install --upgrade pip setuptools wheel"
+
+# Обновляем критические библиотеки
+if execute_silent "pip3 install --upgrade 'pyopenssl>=23.2.0' 'cryptography>=41.0.0'"; then
+    show_complete "Зависимости certbot обновлены"
+else
+    # Пробуем альтернативный метод с force-reinstall
+    if execute_silent "pip3 install --upgrade --force-reinstall pyopenssl cryptography"; then
+        show_complete "Зависимости certbot обновлены (альтернативный метод)"
+    else
+        echo -e "${YELLOW}[WARNING]${NC} Не удалось обновить зависимости. Продолжаем..."
+    fi
+fi
+
+# Шаг 6: Получение внешнего IP (бывший шаг 5)
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Определение внешнего IP сервера..."
 external_ip=$(curl -s --max-time 5 https://api.ipify.org)
@@ -110,7 +129,7 @@ if [[ -z "$external_ip" ]]; then
 fi
 show_complete "Внешний IP сервера: $external_ip"
 
-# Шаг 6: Проверка DNS записи
+# Шаг 7: Проверка DNS записи (бывший шаг 6)
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Проверка A-записи домена..."
 domain_ip=$(dig +short A "$DOMAIN" | head -n1)
@@ -122,7 +141,7 @@ if [[ -z "$domain_ip" ]]; then
 fi
 show_complete "A-запись домена: $domain_ip"
 
-# Шаг 7: Сравнение IP адресов
+# Шаг 8: Сравнение IP адресов (бывший шаг 7)
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Проверка соответствия DNS записи..."
 if [[ "$domain_ip" != "$external_ip" ]]; then
@@ -132,13 +151,13 @@ if [[ "$domain_ip" != "$external_ip" ]]; then
 fi
 show_complete "DNS записи корректны"
 
-# Шаг 8: Остановка nginx (ПЕРЕД проверкой портов)
+# Шаг 9: Остановка nginx (бывший шаг 8)
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Остановка nginx..."
 systemctl stop nginx 2>/dev/null || true
 show_complete "Nginx остановлен"
 
-# Шаг 9: Проверка портов
+# Шаг 10: Проверка портов (бывший шаг 9)
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Проверка портов 80 и 443..."
 
@@ -155,7 +174,7 @@ if ss -tuln | grep -q ":80 "; then
 fi
 show_complete "Порты 80 и 443 свободны"
 
-# Шаг 10: Загрузка шаблона сайта
+# Шаг 11: Загрузка шаблона сайта (бывший шаг 10)
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Загрузка шаблона веб-сайта..."
 TEMP_DIR=$(mktemp -d)
@@ -169,13 +188,14 @@ else
     exit 1
 fi
 
-# Шаг 11: Получение SSL сертификата
+# Шаг 12: Получение SSL сертификата (бывший шаг 11)
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Получение SSL сертификата (может занять время)..."
 if execute_silent "certbot certonly --standalone -d $DOMAIN --agree-tos -m admin@$DOMAIN --non-interactive"; then
     show_complete "SSL сертификат успешно получен"
 else
     show_error "Не удалось получить SSL сертификат"
+    echo -e "${YELLOW}Подробнее: https://github.com/begugla0/selfsniscripts${NC}"
     rm -rf "$TEMP_DIR"
     exit 1
 fi
@@ -216,10 +236,7 @@ fi
 # Тихий тест автопродления
 execute_silent "certbot renew --dry-run" || true
 
-
-
-
-# Шаг 12: Настройка Nginx
+# Шаг 13: Настройка Nginx (бывший шаг 12)
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Создание конфигурации Nginx..."
 
@@ -267,7 +284,7 @@ EOF
 rm -f /etc/nginx/sites-enabled/default
 show_complete "Конфигурация Nginx создана"
 
-# Шаг 13: Запуск Nginx
+# Шаг 14: Запуск Nginx (бывший шаг 13)
 CURRENT_STEP=$((CURRENT_STEP + 1))
 show_progress $CURRENT_STEP $TOTAL_STEPS "Запуск Nginx..."
 
