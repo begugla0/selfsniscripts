@@ -1,316 +1,374 @@
 #!/bin/bash
+set -euo pipefail
 
-# Цвета для визуализации
+# ─── Цвета ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m' # Без цвета
+MAGENTA='\033[0;35m'
+NC='\033[0m'
 
-# Функция для отображения прогресса (только ASCII)
+# ─── Константы ────────────────────────────────────────────────────────────────
+SCRIPT_VERSION="2.0.0"
+SCRIPT_NAME="Self SNI Scripts"
+GITHUB_URL="https://github.com/begugla0/selfsniscripts"
+LOG_FILE="/var/log/sni_setup_$(date +%Y%m%d_%H%M%S).log"
+NGINX_CONF_DIR="/etc/nginx/sites-enabled"
+WEBROOT="/var/www/html"
+
+TOTAL_STEPS=13
+CURRENT_STEP=0
+
+# ─── Вспомогательные функции ──────────────────────────────────────────────────
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"
+}
+
 show_progress() {
-    local current=$1
-    local total=$2
-    local status=$3
+    local current=$1 total=$2 status=$3
     local percent=$((current * 100 / total))
     local filled=$((percent / 2))
     local empty=$((50 - filled))
-    
-    printf "\r${CYAN}["
-    printf "%${filled}s" | tr ' ' '='
-    printf "%${empty}s" | tr ' ' ' '
-    printf "] ${GREEN}%3d%%${NC} ${YELLOW}%s${NC}" "$percent" "$status"
+    printf "\r${CYAN}[%s%s]${NC} ${GREEN}%3d%%${NC} ${YELLOW}%s${NC}" \
+        "$(printf '%0.s=' $(seq 1 $filled) 2>/dev/null || printf '%*s' "$filled" '' | tr ' ' '=')" \
+        "$(printf '%*s' "$empty" '')" \
+        "$percent" "$status"
 }
 
-# Функция для отображения завершенного шага
-show_complete() {
-    local status=$1
-    echo -e "\n${GREEN}[OK]${NC} ${status}"
+step() {
+    CURRENT_STEP=$((CURRENT_STEP + 1))
+    show_progress "$CURRENT_STEP" "$TOTAL_STEPS" "$1"
+    log "STEP $CURRENT_STEP/$TOTAL_STEPS: $1"
 }
 
-# Функция для отображения ошибки
-show_error() {
-    local status=$1
-    echo -e "\n${RED}[ERROR]${NC} ${status}"
+ok() {
+    echo -e "\n${GREEN}[OK]${NC} $1"
+    log "OK: $1"
 }
 
-# Функция для выполнения команд с подавлением вывода
-execute_silent() {
-    local cmd=$1
-    local log_file="/tmp/sni_setup_$(date +%s).log"
-    eval "$cmd" >> "$log_file" 2>&1
-    return $?
+warn() {
+    echo -e "\n${YELLOW}[WARN]${NC} $1"
+    log "WARN: $1"
 }
 
-# Очистка экрана и вывод заголовка
-clear
-echo -e "${CYAN}=====================================================${NC}"
-echo -e "${CYAN}  Установка и настройка Self SNI Scripts by begugla  ${NC}"
-echo -e "${CYAN}=====================================================${NC}"
-echo ""
-
-# Общее количество шагов (увеличено с 13 до 14)
-TOTAL_STEPS=14
-CURRENT_STEP=0
-
-# Шаг 1: Проверка системы
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Проверка операционной системы..."
-sleep 0.3
-
-if ! grep -E -q "^(ID=debian|ID=ubuntu)" /etc/os-release; then
-    show_error "Система не поддерживается. Требуется Debian или Ubuntu."
+die() {
+    echo -e "\n${RED}[ERROR]${NC} $1"
+    log "ERROR: $1"
+    [[ -n "${2:-}" ]] && echo -e "${YELLOW}Подробнее: $2${NC}"
+    echo -e "${YELLOW}Лог: $LOG_FILE${NC}"
     exit 1
-fi
-show_complete "Операционная система совместима"
+}
 
-# Шаг 2: Запрос доменного имени
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Ожидание ввода данных..."
-echo ""
-read -p "Введите доменное имя: " DOMAIN
-if [[ -z "$DOMAIN" ]]; then
-    show_error "Доменное имя не может быть пустым"
-    exit 1
-fi
+run() {
+    log "RUN: $*"
+    eval "$*" >> "$LOG_FILE" 2>&1
+}
 
-read -p "Введите внутренний SNI Self порт (Enter для 9000): " SPORT
-SPORT=${SPORT:-9000}
-show_complete "Параметры получены"
+require_root() {
+    [[ "$EUID" -eq 0 ]] || die "Скрипт должен быть запущен от root (sudo)"
+}
 
-# Шаг 3: Обновление системы
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Обновление списка пакетов..."
-if execute_silent "apt update"; then
-    show_complete "Список пакетов обновлен"
-else
-    show_error "Не удалось обновить список пакетов"
-    exit 1
-fi
+# Ожидание освобождения dpkg/apt lock (до 60 сек)
+wait_apt_lock() {
+    local i=0
+    while fuser /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock > /dev/null 2>&1; do
+        if (( i++ > 60 )); then
+            die "APT заблокирован другим процессом. Попробуйте позже."
+        fi
+        printf "\r${YELLOW}Ожидание освобождения APT lock... %ds${NC}" "$i"
+        sleep 1
+    done
+}
 
-# Шаг 4: Установка зависимостей
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Установка компонентов (nginx, certbot, git, pip)..."
-if execute_silent "DEBIAN_FRONTEND=noninteractive apt install -y nginx certbot python3-certbot-nginx git curl dnsutils python3-pip"; then
-    show_complete "Компоненты успешно установлены"
-else
-    show_error "Не удалось установить необходимые компоненты"
-    exit 1
-fi
-
-# НОВЫЙ ШАГ 5: Обновление Python библиотек для certbot
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Обновление зависимостей certbot (pyOpenSSL, cryptography)..."
-
-# Обновляем pip сначала
-execute_silent "pip3 install --upgrade pip setuptools wheel"
-
-# Обновляем критические библиотеки
-if execute_silent "pip3 install --upgrade 'pyopenssl>=23.2.0' 'cryptography>=41.0.0'"; then
-    show_complete "Зависимости certbot обновлены"
-else
-    # Пробуем альтернативный метод с force-reinstall
-    if execute_silent "pip3 install --upgrade --force-reinstall pyopenssl cryptography"; then
-        show_complete "Зависимости certbot обновлены (альтернативный метод)"
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        source /etc/os-release
+        OS_ID="${ID:-unknown}"
+        OS_VERSION="${VERSION_ID:-unknown}"
+        OS_LIKE="${ID_LIKE:-}"
     else
-        echo -e "${YELLOW}[WARNING]${NC} Не удалось обновить зависимости. Продолжаем..."
+        die "Не удалось определить ОС (/etc/os-release не найден)"
     fi
-fi
 
-# Шаг 6: Получение внешнего IP (бывший шаг 5)
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Определение внешнего IP сервера..."
-external_ip=$(curl -s --max-time 5 https://api.ipify.org)
+    case "$OS_ID" in
+        ubuntu|debian) ;;
+        *)
+            # Проверяем ID_LIKE для производных (Mint, Kali, Pop!_OS и т.д.)
+            if [[ "$OS_LIKE" =~ (ubuntu|debian) ]]; then
+                warn "Производная система ($OS_ID). Продолжаем как Debian-совместимую."
+            else
+                die "Система '$OS_ID' не поддерживается. Требуется Debian/Ubuntu или производные."
+            fi
+            ;;
+    esac
+    ok "ОС: $OS_ID $OS_VERSION"
+}
 
-if [[ -z "$external_ip" ]]; then
-    show_error "Не удалось определить внешний IP сервера"
-    exit 1
-fi
-show_complete "Внешний IP сервера: $external_ip"
+check_port_free() {
+    local port=$1
+    if ss -tuln 2>/dev/null | grep -q ":${port} \|:${port}$"; then
+        die "Порт $port занят. Освободите его перед установкой." "$GITHUB_URL"
+    fi
+}
 
-# Шаг 7: Проверка DNS записи (бывший шаг 6)
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Проверка A-записи домена..."
-domain_ip=$(dig +short A "$DOMAIN" | head -n1)
+get_external_ip() {
+    local ip=""
+    local providers=(
+        "https://api.ipify.org"
+        "https://ifconfig.me"
+        "https://icanhazip.com"
+        "https://checkip.amazonaws.com"
+    )
+    for url in "${providers[@]}"; do
+        ip=$(curl -s --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]')
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    return 1
+}
 
-if [[ -z "$domain_ip" ]]; then
-    show_error "Не удалось получить A-запись для домена $DOMAIN"
-    echo -e "${YELLOW}Подробнее: https://github.com/begugla0/selfsniscripts${NC}"
-    exit 1
-fi
-show_complete "A-запись домена: $domain_ip"
+validate_domain() {
+    local domain=$1
+    # RFC-совместимая проверка формата
+    if ! echo "$domain" | grep -qP '^(?=.{1,253}$)((?!-)[a-zA-Z0-9-]{1,63}(?<!-)\.)+[a-zA-Z]{2,}$' 2>/dev/null; then
+        # Fallback без perl-regexp
+        if ! echo "$domain" | grep -qE '^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'; then
+            die "Некорректный формат домена: $domain"
+        fi
+    fi
+}
 
-# Шаг 8: Сравнение IP адресов (бывший шаг 7)
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Проверка соответствия DNS записи..."
-if [[ "$domain_ip" != "$external_ip" ]]; then
-    show_error "A-запись домена не соответствует внешнему IP сервера"
-    echo -e "${YELLOW}Подробнее: https://github.com/begugla0/selfsniscripts${NC}"
-    exit 1
-fi
-show_complete "DNS записи корректны"
+validate_port() {
+    local port=$1
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+        die "Некорректный порт: $port (допустимо 1–65535)"
+    fi
+    if (( port < 1024 )); then
+        warn "Порт $port < 1024 — привилегированный. Убедитесь, что это намеренно."
+    fi
+}
 
-# Шаг 9: Остановка nginx (бывший шаг 8)
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Остановка nginx..."
-systemctl stop nginx 2>/dev/null || true
-show_complete "Nginx остановлен"
-
-# Шаг 10: Проверка портов (бывший шаг 9)
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Проверка портов 80 и 443..."
-
-if ss -tuln | grep -q ":443 "; then
-    show_error "Порт 443 занят"
-    echo -e "${YELLOW}Подробнее: https://github.com/begugla0/selfsniscripts${NC}"
-    exit 1
-fi
-
-if ss -tuln | grep -q ":80 "; then
-    show_error "Порт 80 занят"
-    echo -e "${YELLOW}Подробнее: https://github.com/begugla0/selfsniscripts${NC}"
-    exit 1
-fi
-show_complete "Порты 80 и 443 свободны"
-
-# Шаг 11: Загрузка шаблона сайта (бывший шаг 10)
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Загрузка шаблона веб-сайта..."
-TEMP_DIR=$(mktemp -d)
-if execute_silent "git clone --depth 1 https://github.com/learning-zone/website-templates.git $TEMP_DIR"; then
-    SITE_DIR=$(find "$TEMP_DIR" -mindepth 1 -maxdepth 1 -type d | shuf -n 1)
-    cp -r "$SITE_DIR"/* /var/www/html/ 2>/dev/null
-    show_complete "Шаблон сайта установлен"
-else
-    show_error "Не удалось загрузить шаблон сайта"
-    rm -rf "$TEMP_DIR"
-    exit 1
-fi
-
-# Шаг 12: Получение SSL сертификата (бывший шаг 11)
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Получение SSL сертификата (может занять время)..."
-if execute_silent "certbot certonly --standalone -d $DOMAIN --agree-tos -m admin@$DOMAIN --non-interactive"; then
-    show_complete "SSL сертификат успешно получен"
-else
-    show_error "Не удалось получить SSL сертификат"
-    echo -e "${YELLOW}Подробнее: https://github.com/begugla0/selfsniscripts${NC}"
-    rm -rf "$TEMP_DIR"
-    exit 1
-fi
-
-# Проверка метода автопродления (systemd timer или cron)
-if systemctl list-timers 2>/dev/null | grep -q certbot.timer; then
-    # Systemd timer найден - добавляем Persistent=true
-    systemctl enable certbot.timer 2>/dev/null || true
-    systemctl start certbot.timer 2>/dev/null || true
-    
-    # Проверяем наличие Persistent=true в конфигурации
-    if ! systemctl cat certbot.timer 2>/dev/null | grep -q "Persistent=true"; then
-        # Создаем override для добавления Persistent=true
-        mkdir -p /etc/systemd/system/certbot.timer.d/
-        cat > /etc/systemd/system/certbot.timer.d/override.conf <<'EOF'
+setup_certbot_renewal() {
+    if systemctl list-timers 2>/dev/null | grep -q "certbot.timer"; then
+        systemctl enable --now certbot.timer 2>/dev/null || true
+        if ! systemctl cat certbot.timer 2>/dev/null | grep -q "Persistent=true"; then
+            mkdir -p /etc/systemd/system/certbot.timer.d/
+            cat > /etc/systemd/system/certbot.timer.d/override.conf <<'EOF'
 [Timer]
 Persistent=true
 EOF
-        systemctl daemon-reload
-        systemctl restart certbot.timer
-    fi
-    
-    show_complete "Автопродление настроено (systemd timer + Persistent)"
-elif [ -f /etc/cron.d/certbot ]; then
-    # Cron уже настроен
-    show_complete "Автопродление настроено (cron)"
-else
-    # Создаем cron задачу вручную
-    cat > /etc/cron.d/certbot <<'CRONEOF'
+            systemctl daemon-reload
+            systemctl restart certbot.timer 2>/dev/null || true
+        fi
+        ok "Автопродление: systemd timer (Persistent=true)"
+    elif [[ -f /etc/cron.d/certbot ]]; then
+        ok "Автопродление: cron (уже настроен)"
+    else
+        cat > /etc/cron.d/certbot <<'EOF'
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
 0 */12 * * * root certbot -q renew --nginx
-CRONEOF
-    show_complete "Автопродление настроено (новый cron)"
-fi
+EOF
+        ok "Автопродление: cron (создан)"
+    fi
+    run "certbot renew --dry-run" || warn "dry-run автопродления завершился с ошибкой (некритично)"
+}
 
-# Тихий тест автопродления
-execute_silent "certbot renew --dry-run" || true
+install_website_template() {
+    local webroot=$1
+    local TEMP_DIR
+    TEMP_DIR=$(mktemp -d)
+    trap 'rm -rf "$TEMP_DIR"' RETURN
 
-# Шаг 13: Настройка Nginx (бывший шаг 12)
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Создание конфигурации Nginx..."
+    if run "git clone --depth 1 https://github.com/learning-zone/website-templates.git $TEMP_DIR"; then
+        local site_dir
+        site_dir=$(find "$TEMP_DIR" -mindepth 1 -maxdepth 1 -type d | shuf -n 1)
+        rm -rf "${webroot:?}"/*
+        cp -r "$site_dir"/. "$webroot/"
+        ok "Шаблон сайта установлен из $(basename "$site_dir")"
+    else
+        warn "Не удалось загрузить шаблон. Будет использована страница nginx по умолчанию."
+    fi
+}
 
-cat > /etc/nginx/sites-enabled/sni.conf <<EOF
+write_nginx_config() {
+    local domain=$1 sport=$2 conf_path=$3
+
+    cat > "$conf_path" <<EOF
+# Сгенерировано $SCRIPT_NAME v$SCRIPT_VERSION — $(date)
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name $domain;
 
-    if (\$host = $DOMAIN) {
-        return 301 https://\$host\$request_uri;
+    location /.well-known/acme-challenge/ {
+        root $WEBROOT;
     }
 
-    return 404;
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
 }
 
 server {
-    listen 127.0.0.1:$SPORT ssl http2;
+    listen 127.0.0.1:${sport} ssl;
+    http2 on;
 
-    server_name $DOMAIN;
+    server_name $domain;
 
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/$domain/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$domain/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/$domain/chain.pem;
 
-    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers on;
-    ssl_ciphers "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384";
+    ssl_ciphers         ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
 
-    ssl_stapling on;
+    ssl_stapling        on;
     ssl_stapling_verify on;
+    resolver            1.1.1.1 8.8.8.8 valid=300s;
+    resolver_timeout    5s;
 
-    resolver 8.8.8.8 8.8.4.4 valid=300s;
-    resolver_timeout 5s;
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
 
-    # Настройки Proxy Protocol
-    real_ip_header proxy_protocol;
-    set_real_ip_from 127.0.0.1;
+    real_ip_header      proxy_protocol;
+    set_real_ip_from    127.0.0.1;
 
     location / {
-        root /var/www/html;
-        index index.html;
+        root  $WEBROOT;
+        index index.html index.htm;
+        try_files \$uri \$uri/ =404;
     }
 }
 EOF
+}
 
-rm -f /etc/nginx/sites-enabled/default
-show_complete "Конфигурация Nginx создана"
+# ─── Точка входа ──────────────────────────────────────────────────────────────
 
-# Шаг 14: Запуск Nginx (бывший шаг 13)
-CURRENT_STEP=$((CURRENT_STEP + 1))
-show_progress $CURRENT_STEP $TOTAL_STEPS "Запуск Nginx..."
+# Инициализация лог-файла
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+log "=== $SCRIPT_NAME v$SCRIPT_VERSION started ==="
 
-if nginx -t > /dev/null 2>&1 && systemctl start nginx > /dev/null 2>&1; then
-    show_complete "Nginx успешно запущен"
-else
-    show_error "Ошибка при запуске Nginx"
-    rm -rf "$TEMP_DIR"
-    exit 1
+clear
+echo -e "${CYAN}╔═════════════════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║   $SCRIPT_NAME v$SCRIPT_VERSION by begugla          ║${NC}"
+echo -e "${CYAN}╚═════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+# ── 0. Root check ────────────────────────────────────────────────────────────
+require_root
+
+# ── 1. Проверка ОС ───────────────────────────────────────────────────────────
+step "Проверка операционной системы..."
+detect_os
+
+# ── 2. Ввод параметров ───────────────────────────────────────────────────────
+step "Ожидание ввода данных..."
+echo ""
+
+read -rp "  Введите доменное имя: " DOMAIN
+[[ -z "$DOMAIN" ]] && die "Доменное имя не может быть пустым"
+validate_domain "$DOMAIN"
+
+read -rp "  Email для Let's Encrypt (Enter = admin@$DOMAIN): " LE_EMAIL
+LE_EMAIL="${LE_EMAIL:-admin@$DOMAIN}"
+
+read -rp "  Внутренний SNI порт (Enter = 9000): " SPORT
+SPORT="${SPORT:-9000}"
+validate_port "$SPORT"
+
+ok "Параметры: домен=$DOMAIN  email=$LE_EMAIL  порт=$SPORT"
+
+# ── 3. Обновление пакетов ─────────────────────────────────────────────────────
+step "Обновление списка пакетов..."
+wait_apt_lock
+run "apt-get update -qq" || die "Не удалось обновить список пакетов"
+ok "Список пакетов обновлён"
+
+# ── 4. Установка зависимостей ────────────────────────────────────────────────
+step "Установка зависимостей..."
+PACKAGES=(nginx certbot python3-certbot-nginx git curl dnsutils)
+run "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${PACKAGES[*]}" \
+    || die "Не удалось установить пакеты: ${PACKAGES[*]}"
+ok "Установлено: ${PACKAGES[*]}"
+
+# ── 5. Внешний IP ────────────────────────────────────────────────────────────
+step "Определение внешнего IP..."
+EXTERNAL_IP=$(get_external_ip) || die "Не удалось определить внешний IP сервера"
+ok "Внешний IP: $EXTERNAL_IP"
+
+# ── 6. DNS A-запись ──────────────────────────────────────────────────────────
+step "Проверка A-записи домена $DOMAIN..."
+DOMAIN_IP=$(dig +short A "$DOMAIN" @1.1.1.1 | grep -E '^[0-9.]+$' | head -n1)
+[[ -z "$DOMAIN_IP" ]] && die "A-запись для $DOMAIN не найдена" "$GITHUB_URL"
+ok "DNS A-запись: $DOMAIN_IP"
+
+# ── 7. Сверка IP ─────────────────────────────────────────────────────────────
+step "Проверка соответствия DNS ↔ IP сервера..."
+if [[ "$DOMAIN_IP" != "$EXTERNAL_IP" ]]; then
+    die "DNS ($DOMAIN_IP) ≠ IP сервера ($EXTERNAL_IP). Обновите A-запись." "$GITHUB_URL"
 fi
+ok "DNS корректен: $DOMAIN_IP = $EXTERNAL_IP"
 
-# Очистка временных файлов
-rm -rf "$TEMP_DIR"
+# ── 8. Остановка nginx ───────────────────────────────────────────────────────
+step "Остановка nginx..."
+systemctl stop nginx 2>/dev/null || true
+ok "Nginx остановлен"
 
-# Финальное сообщение
+# ── 9. Проверка портов ───────────────────────────────────────────────────────
+step "Проверка доступности портов 80/443..."
+check_port_free 80
+check_port_free 443
+ok "Порты 80 и 443 свободны"
+
+# ── 10. Шаблон сайта ─────────────────────────────────────────────────────────
+step "Загрузка шаблона сайта..."
+install_website_template "$WEBROOT"
+
+# ── 11. SSL сертификат ───────────────────────────────────────────────────────
+step "Получение SSL сертификата (может занять время)..."
+run "certbot certonly --standalone -d $DOMAIN --agree-tos -m $LE_EMAIL --non-interactive" \
+    || die "Не удалось получить SSL сертификат. Проверьте DNS и порты." "$GITHUB_URL"
+ok "SSL сертификат получен"
+setup_certbot_renewal
+
+# ── 12. Конфиг Nginx ─────────────────────────────────────────────────────────
+step "Создание конфигурации Nginx..."
+CONF_PATH="$NGINX_CONF_DIR/sni_${DOMAIN}.conf"
+write_nginx_config "$DOMAIN" "$SPORT" "$CONF_PATH"
+rm -f "$NGINX_CONF_DIR/default"
+ok "Конфиг записан: $CONF_PATH"
+
+# ── 13. Запуск Nginx ─────────────────────────────────────────────────────────
+step "Запуск Nginx..."
+nginx -t >> "$LOG_FILE" 2>&1 || die "Конфигурация Nginx содержит ошибки. Лог: $LOG_FILE"
+systemctl enable --now nginx >> "$LOG_FILE" 2>&1 \
+    || die "Не удалось запустить Nginx. Лог: $LOG_FILE"
+ok "Nginx запущен и добавлен в автозагрузку"
+
+# ─── Итог ─────────────────────────────────────────────────────────────────────
 echo ""
-echo -e "${CYAN}=====================================================${NC}"
-echo -e "${CYAN}          Установка завершена успешно!              ${NC}"
-echo -e "${CYAN}=====================================================${NC}"
+echo -e "${CYAN}╔═════════════════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║              Установка завершена!                   ║${NC}"
+echo -e "${CYAN}╚═════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${GREEN}Параметры для подключения:${NC}"
-echo -e "${BLUE}-----------------------------------------------------${NC}"
-echo -e " ${YELLOW}Сертификат:${NC} /etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-echo -e " ${YELLOW}Ключ:${NC}        /etc/letsencrypt/live/$DOMAIN/privkey.pem"
+echo -e "${GREEN}Параметры подключения:${NC}"
+echo -e "${BLUE}──────────────────────────────────────────────────────${NC}"
+echo -e " ${YELLOW}SNI домен:${NC}   $DOMAIN"
 echo -e " ${YELLOW}Dest:${NC}        127.0.0.1:$SPORT"
-echo -e " ${YELLOW}SNI:${NC}         $DOMAIN"
-echo -e "${BLUE}-----------------------------------------------------${NC}"
+echo -e " ${YELLOW}Сертификат:${NC}  /etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+echo -e " ${YELLOW}Ключ:${NC}        /etc/letsencrypt/live/$DOMAIN/privkey.pem"
+echo -e " ${YELLOW}Лог установки:${NC} $LOG_FILE"
+echo -e "${BLUE}──────────────────────────────────────────────────────${NC}"
 echo ""
-echo -e "${GREEN}Скрипт завершен!${NC}"
