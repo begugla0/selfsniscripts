@@ -991,19 +991,22 @@ theme_translation() {
 # ---------------------------------------------------------------------
 #  Шрифтовые пары (Google Fonts)
 # ---------------------------------------------------------------------
+# Выводит две части, разделённые одним «|» (его нет ни в одной из частей):
+#   <google-families-param> | <css-font-stack>
+# Для system первая часть пустая — тогда Google Fonts не подключаются.
 font_stack() {
     case $1 in
-        grotesk)      printf '"Space Grotesk";Space+Grotesk:wght@400;500;700|sans-serif' ;;
-        geometric)    printf '"Poppins";Poppins:wght@400;500;600;700|sans-serif' ;;
-        humanist)     printf '"Mulish";Mulish:wght@400;600;700;800|sans-serif' ;;
-        condensed)    printf '"Oswald";Oswald:wght@400;500;600;700|sans-serif' ;;
-        slab)         printf '"Zilla Slab";Zilla+Slab:wght@400;500;600;700|serif' ;;
-        oldstyle)     printf '"Spectral";Spectral:wght@400;500;600;700|serif' ;;
-        transitional) printf '"Lora";Lora:wght@400;500;600;700|serif' ;;
-        didone)       printf '"Playfair Display";Playfair+Display:wght@400;600;700;800|serif' ;;
-        classical)    printf '"Cormorant Garamond";Cormorant+Garamond:wght@400;500;600;700|serif' ;;
-        mono)         printf '"JetBrains Mono";JetBrains+Mono:wght@400;500;700|monospace' ;;
-        *)            printf 'system-ui;|sans-serif' ;;  # system — без Google Fonts
+        grotesk)      printf '%s' 'Space+Grotesk:wght@400;500;700|"Space Grotesk", system-ui, sans-serif' ;;
+        geometric)    printf '%s' 'Poppins:wght@400;500;600;700|"Poppins", system-ui, sans-serif' ;;
+        humanist)     printf '%s' 'Mulish:wght@400;600;700;800|"Mulish", system-ui, sans-serif' ;;
+        condensed)    printf '%s' 'Oswald:wght@400;500;600;700|"Oswald", system-ui, sans-serif' ;;
+        slab)         printf '%s' 'Zilla+Slab:wght@400;500;600;700|"Zilla Slab", Georgia, serif' ;;
+        oldstyle)     printf '%s' 'Spectral:wght@400;500;600;700|"Spectral", Georgia, serif' ;;
+        transitional) printf '%s' 'Lora:wght@400;500;600;700|"Lora", Georgia, serif' ;;
+        didone)       printf '%s' 'Playfair+Display:wght@400;600;700;800|"Playfair Display", Georgia, serif' ;;
+        classical)    printf '%s' 'Cormorant+Garamond:wght@400;500;600;700|"Cormorant Garamond", Georgia, serif' ;;
+        mono)         printf '%s' 'JetBrains+Mono:wght@400;500;700|"JetBrains Mono", ui-monospace, monospace' ;;
+        *)            printf '%s' '|system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' ;;
     esac
 }
 
@@ -1062,24 +1065,27 @@ generate_site() {
     read -r C_BG C_SURF C_INK C_MUTE C_ACC C_ONACC C_ACC2 <<<"$pal"
     local f_disp f_body
     IFS=';' read -r f_disp f_body <<<"$fonts"
-    local disp_fam disp_imp body_fam body_imp
-    IFS='|' read -r disp_fam disp_imp <<<"$(font_stack "$f_disp")"
-    IFS='|' read -r body_fam body_imp <<<"$(font_stack "$f_body")"
+    # каждая строка: GOOGLE_PARAM|CSS_STACK
+    local disp_param disp_stack body_param body_stack
+    IFS='|' read -r disp_param disp_stack <<<"$(font_stack "$f_disp")"
+    IFS='|' read -r body_param body_stack <<<"$(font_stack "$f_body")"
 
-    # Google Fonts <link>
-    local gf=""
-    local gfparts=()
-    [[ $disp_imp != "" ]] && gfparts+=("$disp_imp")
-    [[ $body_imp != "" && $body_imp != "$disp_imp" ]] && gfparts+=("$body_imp")
-    if ((${#gfparts[@]})); then
-        local qs=""
-        local part
-        for part in "${gfparts[@]}"; do qs+="family=$part&"; done
-        gf="<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\"><link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin><link href=\"https://fonts.googleapis.com/css2?${qs}display=swap\" rel=\"stylesheet\">"
+    # Google Fonts <link> — собираем из непустых параметров (без дублей)
+    local gf="" qs="" p
+    for p in "$disp_param" "$body_param"; do
+        [[ -n $p ]] || continue
+        [[ "&$qs" == *"family=$p&"* ]] && continue
+        qs+="family=$p&amp;"
+    done
+    if [[ -n $qs ]]; then
+        gf="<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">"
+        gf+="<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>"
+        gf+="<link href=\"https://fonts.googleapis.com/css2?${qs}display=swap\" rel=\"stylesheet\">"
     fi
 
     local serif_body=0
-    [[ $body_fam == *serif* || $f_body == oldstyle || $f_body == transitional || $f_body == classical || $f_body == didone || $f_body == slab ]] && serif_body=1
+    case $f_body in oldstyle|transitional|classical|didone|slab|mono) serif_body=1 ;; esac
+    [[ $body_stack == *serif* ]] && serif_body=1
 
     # --- строим секции в переменные ---
     local nav_links
@@ -1160,8 +1166,8 @@ $gf
   --accent:$C_ACC; --on-accent:$C_ONACC; --accent-2:$C_ACC2;
   --line:color-mix(in srgb, var(--ink) 14%, transparent);
   --maxw:1100px; --radius:$(( RANDOM % 2 ? 14 : 4 ))px;
-  --font-display:$disp_fam, Georgia, serif;
-  --font-body:$body_fam, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  --font-display:$disp_stack;
+  --font-body:$body_stack;
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
@@ -1805,13 +1811,38 @@ do_check() {
             --cacert "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" \
             "https://$DOMAIN:$sport/" 2>/dev/null) || code=000
         if [[ $code =~ ^(200|301|302)$ ]]; then
-            printf '%s✓%s Сайт отвечает на 127.0.0.1:%s (HTTP %s)\n' "$GREEN" "$NC" "$sport" "$code"
-            printf '\n%sВсё в порядке.%s Если открываете https://%s напрямую в браузере —\n' "$GREEN" "$NC" "$DOMAIN"
-            printf 'помните: в режиме reality 443 держит Xray, а не nginx. Сайт виден\n'
-            printf 'только через рукопожатие Reality (dest 127.0.0.1:%s).\n' "$sport"
+            printf '%s✓%s Маскировка отвечает на 127.0.0.1:%s (HTTP %s) — сайт, nginx и сертификат исправны\n' "$GREEN" "$NC" "$sport" "$code"
         else
-            printf '%s✗%s Сайт на 127.0.0.1:%s не ответил (код %s)\n' "$RED" "$NC" "$sport" "$code"
+            printf '%s✗%s Маскировка на 127.0.0.1:%s не ответила (код %s)\n' "$RED" "$NC" "$sport" "$code"
             printf '  journalctl -u nginx -n 30 --no-pager\n'
+        fi
+    fi
+
+    # --- Самое частое место затыка: порт 443 ---
+    printf '\n%s── Порт 443 (вход для посетителей) ──%s\n' "$BOLD" "$NC"
+    local owner443 pub
+    owner443=$(port_owner 443)
+    if [[ -z $owner443 ]]; then
+        printf '%s✗%s На порту 443 НИЧЕГО не слушает.\n' "$RED" "$NC"
+        printf '   Маскировка работает, но посетителю на https://%s отвечать некому.\n' "$DOMAIN"
+        if [[ -n $sport ]]; then
+            printf '   Нужно поднять %sXray на 443%s с dest/target = %s127.0.0.1:%s%s и SNI = %s.\n' \
+                "$BOLD" "$NC" "$BOLD" "$sport" "$NC" "$DOMAIN"
+            printf '   Либо, если Reality не нужен, переустановите в режиме direct:\n'
+            printf '     %sbash fakesite.sh -d %s -m direct%s\n' "$YELLOW" "$DOMAIN" "$NC"
+        fi
+    elif [[ $owner443 == nginx* ]]; then
+        printf '%s✓%s Порт 443 слушает nginx (режим direct).\n' "$GREEN" "$NC"
+    else
+        printf '%s✓%s Порт 443 слушает: %s (похоже на Xray/Reality).\n' "$GREEN" "$NC" "$owner443"
+        pub=$(curl -skL -o /dev/null -w '%{http_code}' --max-time 8 "https://$DOMAIN/" 2>/dev/null) || pub=000
+        if [[ $pub =~ ^(200|301|302|304)$ ]]; then
+            printf '%s✓%s Публично https://%s отвечает (HTTP %s) — всё работает.\n' "$GREEN" "$NC" "$DOMAIN" "$pub"
+        else
+            printf '%s✗%s Публично https://%s не отвечает (код %s).\n' "$RED" "$NC" "$DOMAIN" "$pub"
+            printf '   На 443 процесс есть, но рукопожатие не доходит до маскировки. Проверьте:\n'
+            printf '   • в Xray dest/target = 127.0.0.1:%s, serverNames содержит %s;\n' "${sport:-9000}" "$DOMAIN"
+            printf '   • файрвол хостера пропускает входящий 443.\n'
         fi
     fi
     printf '\n'
