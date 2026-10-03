@@ -1,5 +1,8 @@
 <div align="center">
 
+# ДАННАЯ ВЕТКА НЕ АКТУАЛЬНАЯ!!!
+
+
 # 🌐 Self SNI Scripts
 
 [![Bash](https://img.shields.io/badge/Bash-4EAA25?style=for-the-badge&logo=gnu-bash&logoColor=white)](https://www.gnu.org/software/bash/)
